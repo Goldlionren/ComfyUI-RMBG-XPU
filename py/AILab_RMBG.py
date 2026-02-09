@@ -31,7 +31,17 @@ from transformers import AutoModelForImageSegmentation
 import cv2
 import types
 
-device = "cuda" if torch.cuda.is_available() else "cpu"
+from AILab_utils import (
+    pick_device,
+    pick_dtype,
+    autocast_for,
+    empty_cache,
+)
+
+device = pick_device()
+dtype = pick_dtype(device)
+
+print(f"[RMBG] Using device={device}, dtype={dtype}")
 
 folder_paths.add_model_folder_path("rmbg", os.path.join(folder_paths.models_dir, "RMBG"))
 
@@ -138,13 +148,13 @@ class BaseModelLoader:
     
     def clear_model(self):
         if self.model is not None:
-            self.model.cpu()
+            self.model.to("cpu")
             del self.model
 
             import gc
             gc.collect()
-            if torch.cuda.is_available():
-                torch.cuda.empty_cache()
+            empty_cache(device)
+
         self.model = None
         self.current_model_version = None
 
@@ -236,7 +246,7 @@ class RMBGModel(BaseModelLoader):
                 param.requires_grad = False
 
             torch.set_float32_matmul_precision('high')
-            self.model.to(device)
+            self.model.to(device=device, dtype=dtype)
             self.current_model_version = model_name
             
     def process_image(self, images, model_name, params):
@@ -362,7 +372,7 @@ class BENModel(BaseModelLoader):
                 param.requires_grad = False
             
             torch.set_float32_matmul_precision('high')
-            self.model.to(device)
+            self.model.to(device=device, dtype=dtype)
             self.current_model_version = model_name
     
     def process_image(self, image, model_name, params):
@@ -380,7 +390,8 @@ class BENModel(BaseModelLoader):
             processed_input = resized_image.convert("RGBA")
             
             with torch.no_grad():
-                _, foreground = self.model.inference(processed_input)
+                with autocast_for(device, dtype):
+                    outputs = self.model(input_batch)
             
             foreground = foreground.resize((w, h), Image.LANCZOS)
             mask = foreground.split()[-1]
@@ -389,6 +400,7 @@ class BENModel(BaseModelLoader):
             
         except Exception as e:
             handle_model_error(f"Error in BEN processing: {str(e)}")
+            empty_cache(device)
 
 class BEN2Model(BaseModelLoader):
     def __init__(self):
@@ -417,7 +429,7 @@ class BEN2Model(BaseModelLoader):
                     param.requires_grad = False
                 
                 torch.set_float32_matmul_precision('high')
-                self.model.to(device)
+                self.model.to(device=device, dtype=dtype)
                 self.current_model_version = model_name
                 
             except Exception as e:

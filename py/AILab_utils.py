@@ -3,7 +3,58 @@ import numpy as np
 import torch
 from PIL import Image
 from comfy.utils import common_upscale
+from contextlib import nullcontext
 
+#
+# =========================
+# XPU / CUDA aware helpers
+# =========================
+
+def pick_device(prefer: str = "xpu") -> torch.device:
+    """
+    Unified device picker.
+    Priority: XPU > CUDA > CPU
+    """
+    if prefer == "xpu" and hasattr(torch, "xpu") and torch.xpu.is_available():
+        return torch.device("xpu:0")
+    if torch.cuda.is_available():
+        return torch.device("cuda")
+    return torch.device("cpu")
+
+
+def pick_dtype(device: torch.device, prefer: str = "fast") -> torch.dtype:
+    """
+    Pick a safe & performant dtype for the given device.
+    """
+    if device.type == "xpu":
+        # XPU: FP16 is the safest default (BF16 often missing kernels)
+        return torch.float16
+    if device.type == "cuda":
+        return torch.float16
+    return torch.float32
+
+
+def autocast_for(device: torch.device, dtype: torch.dtype):
+    """
+    Device-aware autocast context.
+    XPU: disabled by default (explicit dtype control preferred)
+    """
+    if device.type == "cuda":
+        return torch.autocast(device_type="cuda", dtype=dtype)
+    return nullcontext()
+
+
+def empty_cache(device: torch.device):
+    """
+    Unified cache cleanup.
+    """
+    if device.type == "cuda" and torch.cuda.is_available():
+        torch.cuda.empty_cache()
+    elif device.type == "xpu" and hasattr(torch, "xpu"):
+        try:
+            torch.xpu.empty_cache()
+        except Exception:
+            pass
 
 def tensor2pil(image: torch.Tensor) -> Image.Image:
     return Image.fromarray(np.clip(255.0 * image.cpu().numpy().squeeze(), 0, 255).astype(np.uint8))

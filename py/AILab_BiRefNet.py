@@ -12,6 +12,7 @@
 
 import os
 import torch
+from typing import Dict
 from PIL import Image, ImageFilter
 from torchvision import transforms
 import numpy as np
@@ -22,7 +23,32 @@ import importlib.util
 from safetensors.torch import load_file
 import cv2
 
-device = "cuda" if torch.cuda.is_available() else "cpu"
+if torch.xpu.is_available():
+    device = torch.device("xpu:0")
+elif torch.cuda.is_available():
+    device = torch.device("cuda")
+else:
+    device = torch.device("cpu")
+
+# NOTE (XPU): torchvision deform_conv2d XPU backend currently does NOT support BF16.
+# BiRefNet uses deform_conv2d internally, so we must run BiRefNet in FP16 (or FP32) on XPU.
+if device.type == "xpu":
+    XPU_BIREFNET_DTYPE = torch.float16
+else:
+    XPU_BIREFNET_DTYPE = None
+
+
+# XPU FP8 handling:
+# - By default we DO NOT attempt to run FP8 BiRefNet weights on XPU (often falls back / hangs).
+# - If you want to experiment, flip this to True to cast FP8 tensors to BF16 before loading.
+AUTO_CAST_FP8_ON_XPU = False
+
+def _state_dict_has_fp8(sd: Dict[str, torch.Tensor]) -> bool:
+    for _, v in sd.items():
+        if isinstance(v, torch.Tensor) and hasattr(torch, "float8_e4m3fn") and v.dtype == torch.float8_e4m3fn:
+            return True
+    return False
+
 
 # Add model path
 folder_paths.add_model_folder_path("rmbg", os.path.join(folder_paths.models_dir, "RMBG"))
@@ -286,7 +312,17 @@ class BiRefNetModel:
             del self.model
             self.model = None
             self.current_model_version = None
-            torch.cuda.empty_cache()
+            # Clear caches for the active backend to reduce fragmentation
+            try:
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+            except Exception:
+                pass
+            try:
+                if hasattr(torch, "xpu") and torch.xpu.is_available():
+                    torch.xpu.empty_cache()
+            except Exception:
+                pass
             print("Model cleared from memory")
 
     def load_model(self, model_name):
@@ -322,14 +358,40 @@ class BiRefNetModel:
                 # Initialize model
                 self.model = model_module.BiRefNet(config_module.BiRefNetConfig())
                 
-                # Load weights
+                # Load weights (FIX: state_dict must be defined)
                 state_dict = load_file(weights_path)
-                self.model.load_state_dict(state_dict)
-                
+
+                # XPU guard for FP8 weights
+                if device.type == "xpu":
+                    if _state_dict_has_fp8(state_dict):
+                        if not AUTO_CAST_FP8_ON_XPU:
+                            raise RuntimeError(
+                                f"FP8 (float8_e4m3fn) weights detected in {weights_filename}. "
+                                f"XPU path is unstable with FP8. "
+                                f"Please switch to a non-FP8 BiRefNet variant (try: BiRefNet_512x512 / BiRefNet_lite / BiRefNet_lite-matting), "
+                                f"or set AUTO_CAST_FP8_ON_XPU=True to experiment."
+                            )
+                        # Experimental: cast FP8 tensors to BF16 before loading
+                        casted = {}
+                        for k, v in state_dict.items():
+                            if isinstance(v, torch.Tensor) and hasattr(torch, "float8_e4m3fn") and v.dtype == torch.float8_e4m3fn:
+                                casted[k] = v.to(torch.bfloat16)
+                            else:
+                                casted[k] = v
+                        state_dict = casted
+
+                # Load state dict (be lenient; upstream models sometimes include extra keys)
+                self.model.load_state_dict(state_dict, strict=False)
                 self.model.eval()
-                self.model.half()
+
+                if device.type == "xpu":
+                    # XPU: must be FP16/FP32 because torchvision deform_conv2d XPU backend
+                    # doesn't implement BF16 ("deformable_im2col_xpu" not implemented for BF16).
+                    self.model.to(device=device, dtype=XPU_BIREFNET_DTYPE)
+                else:
+                    self.model.to(device)
+
                 torch.set_float32_matmul_precision('high')
-                self.model.to(device)
                 self.current_model_version = model_name
                 
             except Exception as e:
@@ -347,7 +409,16 @@ class BiRefNetModel:
             orig_image = tensor2pil(image)
             w, h = orig_image.size
             
-            input_tensor = transform_image(orig_image).unsqueeze(0).to(device).half()
+            input_tensor = transform_image(orig_image).unsqueeze(0).to(device)
+
+            # Use sane dtype per backend
+            if device.type == "xpu":
+                input_tensor = input_tensor.to(XPU_BIREFNET_DTYPE)
+            elif device.type == "cuda":
+                input_tensor = input_tensor.to(torch.float16)
+            else:
+                # CPU: keep float32 (often faster/safer than float16 on CPU)
+                input_tensor = input_tensor.to(torch.float32)
             
             with torch.no_grad():
                 preds = self.model(input_tensor)

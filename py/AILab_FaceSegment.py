@@ -18,6 +18,7 @@ import folder_paths
 from huggingface_hub import hf_hub_download
 import shutil
 from torchvision import transforms
+from AILab_utils import pick_device, pick_dtype, autocast_for, empty_cache
 
 def pil2tensor(image: Image.Image) -> torch.Tensor:
     return torch.from_numpy(np.array(image).astype(np.float32) / 255.0)[None,]
@@ -42,7 +43,8 @@ def RGB2RGBA(image: Image.Image, mask: Union[Image.Image, torch.Tensor]) -> Imag
         mask = mask.resize(image.size, Image.Resampling.LANCZOS)
     return Image.merge('RGBA', (*image.convert('RGB').split(), mask.convert('L')))
 
-device = "cuda" if torch.cuda.is_available() else "cpu"
+device = pick_device()
+dtype = pick_dtype(device)
 
 folder_paths.add_model_folder_path("rmbg", os.path.join(folder_paths.models_dir, "RMBG"))
 
@@ -113,7 +115,7 @@ class FaceSegment:
             del self.model
             self.model = None
             self.processor = None
-            torch.cuda.empty_cache()
+            empty_cache(device)
 
     def download_model_files(self):
         model_id = AVAILABLE_MODELS["face_parsing"]
@@ -204,7 +206,8 @@ class FaceSegment:
                 input_tensor = input_tensor.unsqueeze(0).to(device)
                 
                 with torch.no_grad():
-                    outputs = self.model(input_tensor)
+                    with autocast_for(device, dtype):
+                        outputs = self.model(input_tensor)
                     logits = outputs.logits.cpu()
                     upsampled_logits = nn.functional.interpolate(
                         logits,

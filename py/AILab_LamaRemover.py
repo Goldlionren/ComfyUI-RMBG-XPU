@@ -21,6 +21,8 @@ from huggingface_hub import hf_hub_download
 import shutil
 import gc
 
+from AILab_utils import pick_device, empty_cache
+
 def tensor2pil(image):
     return Image.fromarray(np.clip(255. * image.cpu().numpy().squeeze(), 0, 255).astype(np.uint8))
 
@@ -48,7 +50,7 @@ def pad_image(image, is_mask=False):
 def cropimage(image, w, h):
     return image.crop((0, 0, w, h))
 
-DEVICE = get_torch_device()
+DEVICE = pick_device()
 folder_paths.add_model_folder_path("rmbg", os.path.join(folder_paths.models_dir, "RMBG"))
 
 class AILab_LamaRemover:
@@ -92,8 +94,9 @@ class AILab_LamaRemover:
         try:
             self.model = torch.jit.load(self.model_path, map_location=self.device)
         except Exception as e:
-            print(f"Can't use comfy device: {str(e)}")
-            self.device = "cuda" if torch.cuda.is_available() else "cpu"
+            # Fallback: if torchscript cannot run on selected device, fall back to CPU
+            print(f"Can't load Big-Lama on device={self.device}: {str(e)}")
+            self.device = torch.device("cpu")
             self.model = torch.jit.load(self.model_path, map_location=self.device)
         
         self.model.eval()
@@ -128,8 +131,8 @@ class AILab_LamaRemover:
             
             del img_tensor
             del mask_tensor
-            if torch.cuda.is_available():
-                torch.cuda.empty_cache()
+            empty_cache(self.device)
+
                 
             return result_cpu
 
@@ -179,8 +182,7 @@ class AILab_LamaRemover:
             print(traceback.format_exc())
             raise RuntimeError(f"Error in object removal: {str(e)}")
         finally:
-            if torch.cuda.is_available():
-                torch.cuda.empty_cache()
+            empty_cache(self.device)
 
 NODE_CLASS_MAPPINGS = {
     "AILab_LamaRemover": AILab_LamaRemover,

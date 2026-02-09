@@ -19,6 +19,7 @@ import folder_paths
 from huggingface_hub import hf_hub_download
 import shutil
 from torchvision import transforms
+from AILab_utils import pick_device, pick_dtype, autocast_for, empty_cache
 
 def pil2tensor(image: Image.Image) -> torch.Tensor:
     return torch.from_numpy(np.array(image).astype(np.float32) / 255.0)[None,]
@@ -38,7 +39,8 @@ def mask2image(mask: torch.Tensor) -> Image.Image:
         mask = mask.unsqueeze(0)
     return tensor2pil(mask)
 
-device = "cuda" if torch.cuda.is_available() else "cpu"
+device = pick_device()
+dtype = pick_dtype(device)
 
 folder_paths.add_model_folder_path("rmbg", os.path.join(folder_paths.models_dir, "RMBG"))
 
@@ -206,7 +208,7 @@ class FashionSegmentClothing:
             del self.model
             self.model = None
             self.processor = None
-            torch.cuda.empty_cache()
+            empty_cache(device)
 
     def download_model_files(self):
         model_id = AVAILABLE_MODELS["segformer_fashion"]
@@ -284,7 +286,8 @@ class FashionSegmentClothing:
                 inputs = {k: v.to(device) for k, v in inputs.items()}
 
                 with torch.no_grad():
-                    outputs = self.model(**inputs)
+                    with autocast_for(device, dtype):
+                        outputs = self.model(**inputs)
                     logits = outputs.logits.cpu()
                     
                     upsampled_logits = nn.functional.interpolate(
