@@ -1,3 +1,121 @@
+## 🔹 README：Intel XPU 使用说明（成品版）
+
+````md
+## Intel XPU Support (Experimental)
+
+This fork adds **experimental Intel XPU (Arc / Battlemage)** support to ComfyUI-RMBG,
+allowing RMBG / segmentation nodes to run on **PyTorch XPU** backends instead of CUDA-only logic.
+
+> ⚠️ This is **not an official upstream feature yet**.  
+> The goal is to make RMBG **device-aware** and compatible with non-CUDA accelerators.
+
+---
+
+### Supported Hardware
+
+- Intel Arc A770 / A750
+- Intel Arc A770M
+- Intel Battlemage (B60 Pro, B580, etc.)
+- Intel iGPU (limited, experimental)
+
+---
+
+### Software Requirements
+
+- **Linux (recommended)**  
+  Ubuntu 22.04 / 24.04 LTS
+- **PyTorch XPU build**
+  ```bash
+  pip install torch torchvision --index-url https://download.pytorch.org/whl/xpu
+````
+
+* Intel GPU driver + Level Zero (oneAPI runtime)
+* ComfyUI running in a **conda / venv environment**
+
+---
+
+### What Was Changed
+
+This fork focuses on **minimal, targeted changes**:
+
+* Removed hard-coded `torch.cuda.is_available()` checks
+* Centralized device selection via shared `AILab_utils`
+* Ensured models respect:
+
+  * `cpu`
+  * `cuda`
+  * `xpu`
+* Prevented CUDA-only APIs (e.g. `torch.cuda.empty_cache`) from breaking XPU execution
+* Fixed dtype issues where XPU does not support certain ops (e.g. BF16 deformable conv)
+
+> No model architecture was modified.
+
+---
+
+### Currently Verified Nodes
+
+The following nodes have been validated on XPU:
+
+* BiRefNet (RMBG)
+* Cloth Segment
+* Face Segment
+* Fashion Segment
+* LaMa Remover (CPU fallback for unsupported ops)
+
+Other nodes will gracefully fall back to CPU if required.
+
+---
+
+### Known Limitations
+
+* Some operators are **not implemented on XPU for BF16**
+
+  * Example: `deformable_im2col_xpu`
+* In such cases, the code **automatically falls back to FP32 or CPU**
+* ONNXRuntime acceleration providers may still report CUDA even on non-NVIDIA systems
+  (this does **not** affect PyTorch XPU execution)
+
+---
+
+### How to Use
+
+1. Install ComfyUI normally
+2. Clone this fork into `custom_nodes`:
+
+   ```bash
+   git clone https://github.com/Goldlionren/ComfyUI-RMBG-XPU.git comfyui-rmbg
+   ```
+3. Start ComfyUI with XPU-enabled PyTorch
+4. Use RMBG nodes as usual — device selection is automatic
+
+No extra flags are required.
+
+---
+
+### Why This Fork Exists
+
+The upstream project is CUDA-first by design.
+This fork exists to:
+
+* Enable **Intel XPU users** to run RMBG pipelines
+* Keep changes **small, reviewable, and upstreamable**
+* Avoid fragmenting model code or workflows
+
+A pull request to upstream may be submitted once stability improves.
+
+---
+
+### Disclaimer
+
+This fork is provided **as-is** and targets advanced users.
+If you encounter issues, please include:
+
+* GPU model
+* PyTorch version
+* XPU / oneAPI runtime version
+* Full error traceback
+
+---
 # ComfyUI-RMBG
 
 A sophisticated ComfyUI custom node engineered for advanced image background removal and precise segmentation of objects, faces, clothing, and fashion elements. This tool leverages a diverse array of models, including RMBG-2.0, INSPYRENET, BEN, BEN2, BiRefNet, SDMatte models, SAM, SAM2 and GroundingDINO, while also incorporating a new feature for real-time background replacement and enhanced edge detection for improved accuracy.
@@ -426,6 +544,7 @@ If this custom node helps you or you like my work, please give me ⭐ on this re
 
 ## License
 GPL-3.0 License
+
 
 
 
